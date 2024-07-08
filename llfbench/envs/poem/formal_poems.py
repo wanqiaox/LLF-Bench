@@ -482,3 +482,259 @@ class SyllableConstrainedPoem(PoemUtil, gym.Env):
         out = self.assignment, frac, terminal, {'frac': frac, 'original_feedback': feedback,
                                                 "feedback": didactic_feedback, 'success': False}
         return out
+
+
+class HierarchicalLineSyllableConstrainedPoem(PoemUtil, gym.Env):
+    '''
+    This environment is designed to be hierarchical. 
+    It first determines a total number of lines to check. 
+    If the number of generated lines is larger than the lines to check, it goes on to check the syllables in each line.
+    Then, for each of these lines, it checks if the syllabus in each line is correct. 
+    By 'correct', we mean that the number of syllables in each line should lie on one side of a threshold. 
+    When the side is 1, the number of syllables should be larger than the threshold. 
+    This threshold is determined by the [syllable_thres] parameter.
+    The side of the threshold is determined by the [side] parameter.
+    '''
+    def __init__(self, syllable_thres=[7, 7, 7], side=[1, 0, 1], 
+                 context=0, feedback=0, use_extractor=False,
+                 seed=None):
+        super().__init__()
+        assert context <= 1 and context >= 0
+        assert feedback <= 1 and feedback >= 0
+        assert len(syllable_thres) == len(side)
+        self.syllable_req_str = [str(i) for i in syllable_thres]
+        self.assignment = f"Can you write me a poem?"
+        if context > 0:
+            length_context = f" It should have at least {len(syllable_thres)} lines."
+            self.assignment += length_context
+            if context > 1:
+                self.assignment += f" The number of syllables for the first {context - 1} lines in the poem should obey the following rules."
+                for i in range(context - 1):
+                    self.assignment += f" Line number {i + 1} should have at least {syllable_thres[i]} syllables." if side[i] == 1 else f" Line number {i + 1} should have less than {syllable_thres[i]} syllabus."
+        self.use_extractor = use_extractor
+        self.feedback = feedback
+        self.syllable_thres = syllable_thres
+        self.side = side
+        self.context = context
+        self.correctness = [False] * (len(syllable_thres) + 1)
+        self.form_name = 'poem'
+
+        self.docstring = self.assignment
+
+        self.action_space = gym.spaces.Text(sys.maxsize, charset=string.printable)
+        self.observation_space = gym.spaces.Text(sys.maxsize, charset=string.printable)
+
+        self._seed = self.seed(seed)
+
+    def reset(self, **kwargs):
+        if 'seed' in kwargs:
+            self._seed = self.seed(kwargs['seed'])
+        # create a sampling space
+        # Haiku: 3, Tanka: 5, Sonnet: 14, Villanelle: 19, Ballad: 4, Ghazal: 15
+        number_of_lines = self._np_random.choice([5])
+        # https://www.writing.upenn.edu/~afilreis/88/meter.html
+        syllable_sample_space = [3, 5, 7, 8, 9, 10, 15]
+        
+        syllable_thres = []
+        for _ in range(number_of_lines):
+            syllable_thres.append(self._np_random.choice(syllable_sample_space))
+        side = []
+        for _ in range(number_of_lines):
+            side.append(self._np_random.choice([0, 1]))
+        
+        self.syllable_req_str = [str(i) for i in syllable_thres]
+        self.syllable_thres = syllable_thres
+        self.side = side
+        self.assignment = f"Can you write me a poem?"
+        self.correctness = [False] * (len(syllable_thres) + 1)
+
+        import math
+        context_upto = min(math.ceil(self.context * len(self.syllable_thres)), len(self.syllable_thres)) # feedback up to this line
+        if self.context > 0:
+            length_context = f" It should have at least {len(self.syllable_thres)} lines. The first {len(self.syllable_thres)} lines will be checked in order."
+            self.assignment += length_context + f" Correctness of each line will be determined by the number of syllables it contains."
+            if context_upto >= 1:
+                self.assignment += f" The number of syllables for the first {context_upto} "
+                self.assignment += f"lines" if self.context > 1 else f"line"
+                self.assignment += f" in the poem should obey the following rules."
+                for i in range(self.context - 1):
+                    self.assignment += f" Line number {i + 1} should have at least {self.syllable_thres[i]} syllables." if self.side[i] == 1 else f" Line number {i + 1} should have less than {self.syllable_thres[i]} syllabus."
+        
+        return self.assignment
+    
+    def seed(self, seed=None):
+        """Seed the PRNG of this space and possibly the PRNGs of subspaces."""
+        self._np_random, seed = seeding.np_random(seed)
+        return [seed]
+
+    def initialize_text_extractor(self, poem_extractor: PoemExtractor):
+        self.extractor = poem_extractor
+
+    def check_length(self, text):
+        lines = []
+        for line in text.strip().split('\n'):
+            if line == '':
+                continue
+            lines.append(line)
+        self.correctness[0] = (len(lines) >= len(self.syllable_thres))
+        return lines
+    
+    def check_syllables(self, line_id, lines):
+        assert line_id < len(self.syllable_thres)
+        # Track correctness internally, without revealing any other info to the agent except for the feedback. 
+        if False in self.correctness[:line_id + 1]:
+            self.correctness[line_id + 1] = (self._np_random.integers(low=0, high=2) == 0)
+        else:
+            line = lines[line_id]
+            s = self.count_syllables(line)
+            if self.side[line_id] == 0:
+                self.correctness[line_id + 1] = (s <= self.syllable_thres[line_id])
+            else:
+                self.correctness[line_id + 1] = (s > self.syllable_thres[line_id])
+        return lines
+    
+    def line_number_incorrect(self, observed_num):
+        # The line number is incorrect.
+        assert observed_num < len(self.syllable_thres)
+
+        didactic_feedback = Feedback()
+        # If feedback is 0, we only say the poem is incorrect.
+        didactic_feedback.r = f"The generated {self.form_name} is incorrect."
+        if self.feedback == 0:
+            didactic_feedback.fp = f"The generated {self.form_name} is incorrect."
+            didactic_feedback.fn = f"The generated {self.form_name} is incorrect."
+            didactic_feedback.hn = f"The generated {self.form_name} is incorrect."
+        else:
+            didactic_feedback.fp = f"Write a {self.form_name} that has at least {len(self.syllable_thres)} lines. Write more lines."
+            didactic_feedback.fn = f"Do not write a {self.form_name} that has less lines than {len(self.syllable_thres)}."
+            didactic_feedback.hn = f"You wrote {observed_num} lines but the poem needs to be have at least {len(self.syllable_thres)} lines."
+
+        if self.feedback == 0:
+            feedback = f"The generated {self.form_name} is incorrect."
+        else:
+            feedback = f"The generated {self.form_name} is incorrect. This is because the {self.form_name} needs to have at least {len(self.syllable_thres)} lines. You wrote {observed_num} lines. Write more lines."
+            
+        return feedback, didactic_feedback
+    
+    def line_syllable_check(self, checks, lines):
+        success = True
+        success_line, total_line = 0, 0
+        error_info, success_info = [], []
+        for i, check in enumerate(checks[1:]):
+            if False in checks[:i + 1]:
+                assert success == False
+                total_line += 1
+                continue
+            if not check:
+                error_info.append([i, lines[i], self.count_syllables(lines[i])])
+            else:
+                success_line += 1
+                success_info.append([i, lines[i], self.count_syllables(lines[i])])
+            success *= check
+            total_line += 1
+
+        return success, success_line / total_line, error_info, success_info
+        
+    def produce_line_feedback(self, error_info, success_info):
+        # TODO: change feedback to encourage LM to only turn one knob at a time (follow the curriculum)
+        import math
+        feedback_upto = min(math.ceil(self.feedback * len(self.syllable_thres)), len(self.syllable_thres)) # feedback up to this line
+        # This is called when the line number is correct
+        improv_direction = ["less", "more"]
+        # produce didactic feedback
+        didactic_feedback = Feedback()
+        if len(error_info) == 0:  # success
+            # this is the only place sucess feedback is produced
+            didactic_feedback.r = f"The generated {self.form_name} is correct. Congrats! You have successfully produced a poem that matches the assignment description."
+            feedback = didactic_feedback.r
+            return feedback, didactic_feedback
+        else:
+            didactic_feedback.r = f"The generated {self.form_name} is incorrect."
+            if feedback_upto > 0:
+                didactic_feedback.hn = f" The number of syllables for the first {feedback_upto} lines in the poem should obey the following rules."
+            for i in range(feedback_upto):
+                didactic_feedback.hn += f" Line number {i + 1} should have at least {self.syllable_thres[i]} syllables." if self.side[i] == 1 else f" Line number {i + 1} should have less than {self.syllable_thres[i]} syllabus."
+            if feedback_upto > 0:
+                didactic_feedback.hn += " Yet lines " if sum([error[0] < feedback_upto for error in error_info]) > 1 else " Yet line "
+                for tup in error_info:
+                    i, line, count = tup
+                    if i < feedback_upto:
+                        didactic_feedback.hn += f"{i + 1},"
+                didactic_feedback.hn = didactic_feedback.hn[:-1]
+                didactic_feedback.hn += " do not." if sum([error[0] < feedback_upto for error in error_info]) > 1 else " does not."
+
+            if feedback_upto > 0 and len(success_info) > 0:
+                didactic_feedback.hp = "These lines are correct because they have the correct syllables: "
+                for tup in success_info:
+                    i, line, count = tup
+                    if i < feedback_upto:
+                        side = self.side[i]
+                        didactic_feedback.hp += f" line {i + 1} has {count} syllables, {improv_direction[side]} than {self.syllable_thres[i]} syllabus,"
+                didactic_feedback.hp = didactic_feedback.hp[:-1]
+                didactic_feedback.hp += "."
+
+            if feedback_upto > 0:
+                didactic_feedback.fp = "Here are some suggestions to fix your error:\n"
+                for tup in error_info:
+                    i, line, count = tup
+                    if i < feedback_upto:
+                        side = self.side[i]
+                        didactic_feedback.fp += f'Line number {i + 1} has {count} syllables. It should have {improv_direction[side]} than {self.syllable_thres[i]} syllables. '
+                        didactic_feedback.fp += f'You should rewrite the line to have {improv_direction[side]} syllables.' + '\n'
+
+        # now we know there's an error
+        if feedback_upto == 0:
+            # we just say "The generated poem is not correct."
+            feedback = f"The generated {self.form_name} is incorrect."
+        else:
+            # we offer feedback up to the feedback_line
+            # we offer an explanation or error message (on exactly which line is at fault) before feedback_line
+            feedback = f"The generated {self.form_name} is incorrect.\n"
+            feedback += f" The number of syllables for the first {feedback_upto} lines in the poem should obey the following rules."
+            for i in range(feedback_upto):
+                feedback += f" Line number {i + 1} should have at least {self.syllable_thres[i]} syllables." if self.side[i] == 1 else f" Line number {i + 1} should have less than {self.syllable_thres[i]} syllabus."
+            feedback += ", but lines " if sum([error[0] < feedback_upto for error in error_info]) > 1 else ", but line "
+            for tup in error_info:
+                i, line, count = tup
+                if i < feedback_upto:
+                    feedback += f"{i + 1},"
+            feedback = feedback[:-1]
+            feedback += " do not." if sum([error[0] < feedback_upto for error in error_info]) > 1 else " does not."
+
+            feedback += "Here are some suggestions to fix your error:\n"
+            for tup in error_info:
+                i, line, count = tup
+                if i < feedback_upto:
+                    side = self.side[i]
+                    feedback += f'Line number {i + 1} has {count} syllables. It should have {improv_direction[side]} than {self.syllable_thres[i]} syllables. '
+                    feedback += f'You should rewrite the line to have {improv_direction} syllables.' + '\n'
+
+        return feedback, didactic_feedback
+
+    def step(self, lines):
+        checks = self.correctness
+        assert len(checks) == len(self.syllable_thres) + 1
+        feedbacks, didactic_feedback = [], Feedback()
+        success = True
+        if not checks[0]:
+            success = False
+            feedback, didactic_feedback = self.line_number_incorrect(len(lines))
+            feedbacks.append(feedback)
+            frac = 0
+            # if line numbers are not enough, it's a first problem, reward we manually set to be 0
+        else:
+            syllable_success, frac, error_info, success_info = self.line_syllable_check(checks, lines)
+            assert syllable_success == (len(error_info) == 0)
+            success *= syllable_success
+            feedback, didactic_feedback = self.produce_line_feedback(error_info, success_info)
+            feedbacks.append(feedback)
+
+        terminal = False  # one step environment
+
+        if type(success) == int:
+            success = success == 1
+
+        # observation, reward, terminated, info
+        return self.assignment, frac, terminal, {'original_feedback': feedback,
+                                                 'feedback': didactic_feedback,
+                                                 'success': success}

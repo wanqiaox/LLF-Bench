@@ -8,6 +8,7 @@ ENVIRONMENTS = (
     'Tanka',
     'LineSyllableConstrainedPoem',
     'SyllableConstrainedPoem',
+    'HierarchicalLineSyllableConstrainedPoem',
 )
 
 def make_env(env_name,

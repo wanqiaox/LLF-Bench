@@ -1,7 +1,7 @@
 from typing import SupportsFloat
 from llfbench.envs.env_wrappers import TerminalFreeWrapper, EnvCompatibility
 from llfbench.envs.llf_env import LLFWrapper, Feedback
-from llfbench.envs.poem.formal_poems import Haiku, Tanka, LineSyllableConstrainedPoem, SyllableConstrainedPoem
+from llfbench.envs.poem.formal_poems import Haiku, Tanka, LineSyllableConstrainedPoem, SyllableConstrainedPoem, HierarchicalLineSyllableConstrainedPoem
 from llfbench.envs.poem.prompts import *
 
 class PoemGymWrapper(LLFWrapper):
@@ -31,6 +31,16 @@ class PoemGymWrapper(LLFWrapper):
             instruction = self.reformat(instruction, syllable_constrained_poem_b_instruction)
             if 'syllable' in options:
                 self.env.syllable = options['syllable']
+        elif type(self._poem_env) == HierarchicalLineSyllableConstrainedPoem:
+            # TODO: reformat instructions
+            if 'syllable_thres' in options:
+                self.env.syllable_thres = options['syllable_thres']
+            if 'side' in options:
+                self.env.side = options['side']
+            if 'context' in options:
+                self.env.context = options['context']
+            if 'feedback' in options:
+                self.env.feedback = options['feedback']
         return dict(instruction=instruction, observation=None, feedback=None), info
 
     def _step(self, action):

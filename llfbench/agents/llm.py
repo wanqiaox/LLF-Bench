@@ -284,7 +284,8 @@ def standardize_model_name(model):
 
 def make_llm(model, **kwargs):
     """ model = backend:model_name """
-    available_backends = ['gcr']  # TODO
+    # available_backends = ['gcr']  # TODO
+    available_backends = []
     if os.getenv('AZURE_OPENAI_KEY') is not None:
         available_backends.append('azure')
 
