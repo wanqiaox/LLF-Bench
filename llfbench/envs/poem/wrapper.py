@@ -35,7 +35,12 @@ class PoemGymWrapper(LLFWrapper):
             # TODO: reformat instructions
             if 'syllable_thres' in options:
                 self.env.syllable_thres = options['syllable_thres']
+                side = []
+                for _ in range(len(self.env.syllable_thres)):
+                    side.append(self.np_random.choice([0, 1]))
+                self.env.side = side
             if 'side' in options:
+                assert len(options['side']) == len(self.env.syllable_thres)
                 self.env.side = options['side']
             if 'context' in options:
                 self.env.context = options['context']
