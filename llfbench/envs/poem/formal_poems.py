@@ -486,14 +486,15 @@ class SyllableConstrainedPoem(PoemUtil, gym.Env):
 
 class HierarchicalLineSyllableConstrainedPoem(PoemUtil, gym.Env):
     '''
-    This environment is designed to be hierarchical. 
-    It first determines a total number of lines to check. 
-    If the number of generated lines is larger than the lines to check, it goes on to check the syllables in each line.
-    Then, for each of these lines, it checks if the syllabus in each line is correct. 
-    By 'correct', we mean that the number of syllables in each line should lie on one side of a threshold. 
-    When the side is 1, the number of syllables should be larger than the threshold. 
-    This threshold is determined by the [syllable_thres] parameter.
-    The side of the threshold is determined by the [side] parameter.
+    This environment is designed to be hierarchical.  There are two aspects to be checked: numerical
+    constraints and content constraints.
+    Numerical constraints include paragraph-, sentence-, syllable-, and word-level constraints. The 
+    following are checked in order:
+    1. the number of paragraphs
+    2. the number of sentences/lines in each paragraph
+    3. the number of syllables/words in each line. The constraints for syllables and words cannot be 
+    specified at the same time.
+    Content constraints include prefix and ending constraints. 
     '''
     def __init__(self, syllable_thres=[7, 7, 7], side=[1, 0, 1], 
                  context=0, feedback=0, use_extractor=False,
