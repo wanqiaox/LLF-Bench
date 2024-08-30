@@ -319,5 +319,5 @@ def make_llm(model, **kwargs):
         raise ValueError("Unknown LLM model: {}".format(model))
 
 # Create a default LLM
-DEFAULT_MODEL = "gpt-35-turbo"
+DEFAULT_MODEL = "gpt-4"
 DEFAULT_LLM = make_llm(DEFAULT_MODEL, system_prompt="You're a helpful assistant.", temperature=0.0)

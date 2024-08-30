@@ -486,15 +486,8 @@ class SyllableConstrainedPoem(PoemUtil, gym.Env):
 
 class HierarchicalLineSyllableConstrainedPoem(PoemUtil, gym.Env):
     '''
-    This environment is designed to be hierarchical.  There are two aspects to be checked: numerical
-    constraints and content constraints.
-    Numerical constraints include paragraph-, sentence-, syllable-, and word-level constraints. The 
-    following are checked in order:
-    1. the number of paragraphs
-    2. the number of sentences/lines in each paragraph
-    3. the number of syllables/words in each line. The constraints for syllables and words cannot be 
-    specified at the same time.
-    Content constraints include prefix and ending constraints. 
+    This environment is designed to be hierarchical.  It is also very rough and will need significant
+    reshaping if reused in the future. For now it's left as is. 
     '''
     def __init__(self, syllable_thres=[7, 7, 7], side=[1, 0, 1], 
                  context=0, feedback=0, use_extractor=False,
@@ -725,6 +718,423 @@ class HierarchicalLineSyllableConstrainedPoem(PoemUtil, gym.Env):
             # if line numbers are not enough, it's a first problem, reward we manually set to be 0
         else:
             syllable_success, frac, error_info, success_info = self.line_syllable_check(checks, lines)
+            assert syllable_success == (len(error_info) == 0)
+            success *= syllable_success
+            feedback, didactic_feedback = self.produce_line_feedback(error_info, success_info)
+            feedbacks.append(feedback)
+
+        terminal = False  # one step environment
+
+        if type(success) == int:
+            success = success == 1
+
+        # observation, reward, terminated, info
+        return self.assignment, frac, terminal, {'original_feedback': feedback,
+                                                 'feedback': didactic_feedback,
+                                                 'success': success}
+    
+
+class NumericalPlanningPoem(PoemUtil, gym.Env):
+    '''
+    This environment is designed to be hierarchical.  There are two aspects to be checked: numerical
+    constraints and content constraints.
+    Numerical constraints include paragraph-, sentence-, syllable-, and word-level constraints. The 
+    following are checked in order:
+    1. the number of paragraphs
+    2. the number of sentences/lines in each paragraph
+    3. the number of syllables/words in each line. The constraints for syllables and words cannot be 
+    specified at the same time.
+    Content constraints include prefix and ending constraints. 
+    '''
+    # TODO: consolidate context and feedback choices
+    def __init__(self, syllable_req=[[7, 7, 7]], word_req=None, starts_with=None, ends_with=None,
+                 context=3, feedback=0, use_extractor=False,
+                 seed=None):
+        super().__init__()
+        assert context >= 0
+        assert feedback <= 1 and feedback >= 0
+        assert (syllable_req is None) or (word_req is None)
+        
+        if syllable_req is not None:
+            self.checking_type = "syllables"
+            self.para_req_str = [str(len(para)) for para in syllable_req]
+            req_str = [[str(i) for i in para] for para in syllable_req]
+        elif word_req is not None:
+            self.checking_type = "words"
+            self.para_req_str = [str(len(para)) for para in word_req]
+            req_str = [[str(i) for i in para] for para in word_req]
+        self.req_str = ["-".join(req_str[i]) for i in range(len(req_str))]
+        self.assignment = f"Can you write me a poem?"
+        para_context = f" It should have exactly {len(self.para_req_str)} "
+        para_context += "paragraphs." if len(self.para_req_str) > 1 else "paragraph."
+        line_context = f" The number of lines in each paragraph should follow a {'-'.join(self.para_req_str)} pattern." if len(self.para_req_str) > 1 else f" The paragraph should contain exactly {len(req_str[0])} lines."
+        syllable_word_context = f" The number of {self.checking_type} in each line should follow a {', '.join(self.req_str).strip(', ')} pattern."
+        if context > 0:
+            self.assignment += para_context
+            if context > 1:
+                self.assignment += line_context
+                if context > 2:
+                    self.assignment += syllable_word_context
+        self.starts_with = starts_with
+        self.ends_with = ends_with
+        self.use_extractor = use_extractor
+        self.feedback = feedback
+        self.req = syllable_req if self.checking_type == "syllables" else word_req
+        self.context = context
+        self.form_name = 'poem'
+        self.checks = {}
+
+        self.docstring = self.assignment
+
+        self.action_space = gym.spaces.Text(sys.maxsize, charset=string.printable)
+        self.observation_space = gym.spaces.Text(sys.maxsize, charset=string.printable)
+
+        self._seed = self.seed(seed)
+
+    def reset(self, **kwargs):
+        if 'seed' in kwargs:
+            self._seed = self.seed(kwargs['seed'])
+        # create a sampling space
+        # Haiku: 3, Tanka: 5, Sonnet: 14, Villanelle: 19, Ballad: 4, Ghazal: 15
+        number_of_paras = self._np_random.choice([1, 2, 3, 4])
+        line_sample_space = [1, 3, 5, 7]
+        # https://www.writing.upenn.edu/~afilreis/88/meter.html
+        syllable_sample_space = [3, 5, 7, 8, 9, 10, 15]
+        
+        # default to syllable checks for now. 
+        syllable_req = []
+        for _ in range(number_of_paras):
+            line_req = []
+            for _ in range(self._np_random.choice(line_sample_space)):
+                line_req.append(self._np_random.choice(syllable_sample_space))
+            syllable_req.append(line_req)
+        self.checking_type = "syllables"
+        self.para_req_str = [str(len(para)) for para in syllable_req]
+        req_str = [[str(i) for i in para] for para in syllable_req]
+        self.req_str = ["-".join(req_str[i]) for i in range(len(req_str))]
+        self.req = syllable_req
+        self.assignment = f"Can you write me a poem?"
+        if self.starts_with is not None and self.context > 0:
+            self.assignment = f"Can you complete a poem '{self.starts_with}'?"
+        if self.ends_with is not None and self.context > 0:
+            if len(self.ends_with.split(' ')) == 1:
+                self.assignment = self.assignment.strip('?') + f" including the last word as '{self.ends_with}'?"
+            else:
+                self.assignment = self.assignment.strip('?') + f" including the last sentence as '{self.ends_with}'?"
+        para_context = f" It should have exactly {len(self.para_req_str)} "
+        para_context += "paragraphs." if len(self.para_req_str) > 1 else "paragraph."
+        line_context = f" The number of lines in each paragraph should follow a {'-'.join(self.para_req_str)} pattern." if len(self.para_req_str) > 1 else f" The paragraph should contain exactly {len(req_str[0])} lines."
+        syllable_word_context = f" The number of {self.checking_type} in each line should follow a {', '.join(self.req_str).strip(', ')} pattern."
+        if self.context > 1:
+            self.assignment += para_context
+            if self.context > 2:
+                self.assignment += line_context
+                if self.context > 3:
+                    self.assignment += syllable_word_context
+        return self.assignment
+    
+    def seed(self, seed=None):
+        """Seed the PRNG of this space and possibly the PRNGs of subspaces."""
+        self._np_random, seed = seeding.np_random(seed)
+        return [seed]
+    
+    def initialize_text_extractor(self, poem_extractor: PoemExtractor):
+        self.extractor = poem_extractor
+
+    def check_suffix(self, text):
+        if self.ends_with is None:
+            self.checks['suffix'] = True
+        else:
+            self.checks['suffix'] = self.ends_with in text.strip().split('\n')[-1]
+        return text
+
+    def check_paragraphs(self, text):
+        paras = []
+        for para in text.strip().split('\n\n'):
+            if para == '':
+                continue
+            paras.append(para)
+        self.checks['paras'] = len(self.para_req_str) == len(paras)
+        return paras
+    
+    def check_lines(self, text, paras):
+        lines = []
+        for para in paras:
+            group = []
+            for line in para.strip().split('\n'):
+                if line == '':
+                    continue
+                group.append(line)
+            lines.append(group)
+        if self.checks['paras']:
+            line_counts = [len(group) for _, group in enumerate(lines)]
+            line_checks = [count == len(self.req[i]) for i, count in enumerate(line_counts)]
+            self.checks['lines'] = line_checks
+        else:
+            self.checks['lines'] = [False for _ in range(len(self.req))]
+        return lines
+    
+    def check_syllables(self, lines):
+        # Track correctness internally, without revealing any other info to the agent except for the feedback. 
+        line_syllable_counts = []
+        for para in lines:
+            para_syllable_counts = []
+            for line in para:
+                s = self.count_syllables(line)
+                para_syllable_counts.append(s)
+            line_syllable_counts.append(para_syllable_counts)
+        if False in self.checks['lines']:
+            self.checks['syllables'] = [[False for _ in range(len(self.req[i]))] for i in range(len(self.req))]
+        else:
+            syllable_checks = [[line_syllable_counts[i][j] == req for j, req in enumerate(self.req[i])] for i in range(len(self.req))]
+            self.checks['syllables'] = syllable_checks
+        return line_syllable_counts
+    
+    """ The following are feedback formatting functions based on self.checks. """
+    def paras_number_incorrect(self, observed_num):
+        # The paragraph number is incorrect.
+        assert observed_num != len(self.req)
+
+        improv_direction = "more" if observed_num < len(self.req) else "less"
+
+        didactic_feedback = Feedback()
+        didactic_feedback.r = f"The generated {self.form_name} is incorrect."
+        didactic_feedback.fp = f"Write a {self.form_name} that has exactly {len(self.req)} "
+        didactic_feedback.fp += "paragraphs. " if len(self.req) > 1 else "paragraph. "
+        didactic_feedback.fp += f"Write {improv_direction} paragraphs."
+        didactic_feedback.fn = f"Do not write a {self.form_name} that has more or less paragraphs than {len(self.req)}."
+        didactic_feedback.hn = f"You wrote {observed_num} "
+        didactic_feedback.hn += "paragraphs " if observed_num > 1 else "paragraph "
+        didactic_feedback.hn += f"but the poem needs to have exactly {len(self.req)} "
+        didactic_feedback.hn += "paragraphs." if len(self.req) > 1 else "paragraph."
+
+        if self.feedback == 0:
+            feedback = f"The generated {self.form_name} is incorrect."
+        elif self.feedback == 0.5:
+            feedback = f"The generated {self.form_name} is incorrect. This is because the {self.form_name} needs to have exactly {len(self.req)} paragraphs."
+        elif self.feedback == 1:
+            improv_direction = "more" if observed_num < len(self.req) else "less"
+            feedback = f"The generated {self.form_name} is incorrect. This is because the {self.form_name} needs to have exactly {len(self.req)} paragraphs. You wrote {observed_num} paragraphs. Write {improv_direction} paragraphs."
+        else:
+            raise ValueError(f"Invalid feedback level: {self.feedback}")
+
+        return feedback, didactic_feedback
+    
+    def suffix_incorrect(self, last_line):
+        # The suffix is incorrect.
+        assert self.ends_with not in last_line
+        didactic_feedback = Feedback()
+        didactic_feedback.r = f"The generated {self.form_name} is incorrect."
+        didactic_feedback.fp = f"Write a {self.form_name} that ends with '{self.ends_with}'."
+        didactic_feedback.fn = f"Do not write a {self.form_name} that ends with anything other than '{self.ends_with}'."
+        didactic_feedback.hn = f"You wrote '{last_line}' as ending but the poem needs to end exactly with '{self.ends_with}'."
+        
+        if self.feedback == 0:
+            feedback = f"The generated {self.form_name} is incorrect."
+        elif self.feedback == 0.5:
+            feedback = f"The generated {self.form_name} is incorrect. This is because the {self.form_name} needs to end exactly with '{self.ends_with}'."
+        elif self.feedback == 1:
+            feedback = f"The generated {self.form_name} is incorrect. This is because the {self.form_name} needs to end exactly with '{self.ends_with}'. You wrote '{last_line}' as the ending. Write an ending that ends with '{self.ends_with}'."
+        else:
+            raise ValueError(f"Invalid feedback level: {self.feedback}")
+
+        return feedback, didactic_feedback
+    
+    def line_number_check(self, observed_nums, paras):
+        success = True
+        success_para, total_para = 0, 0
+        error_info, success_info = [], []
+        for i, _ in enumerate(self.req):
+            lines = '\n'.join(paras[i])
+            count = len(self.req[i])
+            success *= count == observed_nums[i]
+            if observed_nums[i] != count:
+                diff = count - observed_nums[i] # positive: increase lines; negative: decrease lines
+                error_info.append([i, lines, observed_nums[i], diff])
+            else:
+                success_para += 1
+                success_info.append([i, lines, observed_nums[i], 0])
+            total_para += 1
+
+        return success, success_para / total_para, error_info, success_info
+    
+    def produce_para_feedback(self, error_info, success_info):
+        # This is called when the paragraph number is correct
+        # produce didactic feedback
+        didactic_feedback = Feedback()
+        didactic_feedback.r = f"The generated {self.form_name} is incorrect."
+        didactic_feedback.hn = f"{self.form_name} needs to have exactly {'-'.join(self.para_req_str)} lines in "
+        didactic_feedback.hn += f"{len(self.para_req_str)} "
+        didactic_feedback.hn += f"paragraphs" if len(self.para_req_str) > 1 else f"paragraph"
+        didactic_feedback.hn += ", but paragraphs " if len(error_info) > 1 else ", but paragraph "
+        for tup in error_info:
+            i, lines, count, diff = tup
+            didactic_feedback.hn += f"{i + 1},"
+        didactic_feedback.hn = didactic_feedback.hn[:-1]
+        didactic_feedback.hn += " do not." if len(error_info) > 1 else " does not."
+
+        if len(success_info) > 0:
+            didactic_feedback.hp = "These paragraphs are correct because they have the correct number of lines: "
+            for tup in success_info:
+                i, lines, count, diff = tup
+                didactic_feedback.hp += f"paragraph {i + 1} has {count} lines,"
+                didactic_feedback.hp = didactic_feedback.hp[:-1]
+                didactic_feedback.hp += "."
+        
+        didactic_feedback.fp = "Here are some suggestions to fix your error:\n"
+        for tup in error_info:
+            i, lines, count, diff = tup
+            improv_direction = "more" if diff > 0 else "less"
+            didactic_feedback.fp += f'The paragraph: "{lines}" has {count} '
+            didactic_feedback.fp += 'lines' if count > 1 else 'line'
+            didactic_feedback.fp += f'. It should have {self.para_req_str[i]} '
+            didactic_feedback.fp += f'lines. ' if int(self.para_req_str[i]) > 1 else 'line. '
+            didactic_feedback.fp += f'You should rewrite the paragraph to have {improv_direction} lines.' + '\n'
+
+        # now we know there's an error
+        if self.feedback == 0:
+            # we just say "The generated poem is not correct."
+            feedback = f"The generated {self.form_name} is incorrect."
+        elif self.feedback == 0.5:
+            # we offer an explanation or error message (on exactly which line is at fault)
+            # Generated poem is incorrect because <which rule was violated, and where:> poem needs to have exactly 7 lines in each paragraph, but lines x,y do not.
+            feedback = f"The generated {self.form_name} is incorrect.\n"
+            feedback += f"This is because {self.form_name} needs to have exactly {'-'.join(self.para_req_str)} lines in {len(self.para_req_str)} paragraphs"
+            feedback += ", but paragraphs " if len(error_info) > 1 else ", but line "
+            for tup in error_info:
+                i, lines, count, diff = tup
+                feedback += f"{i + 1},"
+            feedback = feedback[:-1]
+            feedback += " do not." if len(error_info) > 1 else " does not."
+        elif self.feedback == 1:
+            feedback = f"The generated {self.form_name} is incorrect.\n"
+            feedback += "Here are some suggestions to fix your error:\n"
+            for tup in error_info:
+                i, lines, count, diff = tup
+                improv_direction = "more" if diff > 0 else "less"
+                feedback += f'The paragraph: "{lines}" has {count} lines. It should only have {self.para_req_str[i]} lines. '
+                feedback += f'You should rewrite the paragraph to have {improv_direction} lines.' + '\n'
+
+        return feedback, didactic_feedback
+    
+    def syllable_number_check(self, observed_nums, lines):
+        # TODO: can make this much shorter by using previously compared checks
+        success = True
+        success_line, total_line = 0, 0
+        error_info, success_info = [], []
+
+        for i in range(len(self.req)):
+            for j in range(len(self.req[i])):
+                # this is to say -- if the generated poem is shorter than required lines
+                # we just count the missing line as wrong (for the missing line)
+                if j >= len(observed_nums[i]):
+                    success = False
+                    total_line += 1
+                    continue
+                line = lines[i][j]
+                count = observed_nums[i][j]
+                success *= count == self.req[i][j]
+                if count != self.req[i][j]:
+                    diff = self.req[i][j] - count # positive: increase syllable; negative: decrease syllable
+                    error_info.append([i, j, line, count, diff])
+                else:
+                    success_line += 1
+                    success_info.append([i, j, line, count, 0])
+                total_line += 1
+
+        return success, success_line / total_line, error_info, success_info
+    
+    def produce_line_feedback(self, error_info, success_info):
+        # This is called when the line numbers are correct
+        # produce didactic feedback
+        didactic_feedback = Feedback()
+        if len(error_info) == 0:  # success
+            # this is the only place sucess feedback is produced
+            didactic_feedback.r = f"The generated {self.form_name} is correct. Congrats! You have successfully produced a poem that matches the assignment description."
+            feedback = didactic_feedback.r
+            return feedback, didactic_feedback
+        else:
+            didactic_feedback.r = f"The generated {self.form_name} is incorrect."
+            didactic_feedback.hn = f"{self.form_name} needs to have exactly {', '.join(self.req_str).strip(', ')} syllables in {'-'.join(self.para_req_str)} lines."
+            didactic_feedback.hn += f" The number of syllables in each line should follow a {', '.join(self.req_str).strip(', ')} pattern"
+            didactic_feedback.hn += ", but"
+            for tup in error_info:
+                i, j, line, count, diff = tup
+                didactic_feedback.hn += f" line {j + 1} in paragraph {i + 1},"
+            didactic_feedback.hn = didactic_feedback.hn[:-1]
+            didactic_feedback.hn += " do not." if len(error_info) > 1 else " does not."
+            
+            if len(success_info) > 0:
+                didactic_feedback.hp = "These lines are correct because they have the correct syllables: "
+                for tup in success_info:
+                    i, j, line, count, diff = tup
+                    didactic_feedback.hp += f"line {j + 1} in paragraph {i + 1} has {count} syllables,"
+                didactic_feedback.hp = didactic_feedback.hp[:-1]
+                didactic_feedback.hp += "."
+
+            didactic_feedback.fp = "Here are some suggestions to fix your error:\n"
+            for tup in error_info:
+                i, j, line, count, diff = tup
+                improv_direction = "more" if diff > 0 else "less"
+                didactic_feedback.fp += f'The line: "{line}" has {count} syllables. It should only have {self.req[i][j]} syllables. '
+                didactic_feedback.fp += f'You should rewrite the line to have {improv_direction} syllables.' + '\n'
+
+        # now we know there's an error
+        if self.feedback == 0:
+            # we just say "The generated poem is not correct."
+            feedback = f"The generated {self.form_name} is incorrect."
+        elif self.feedback == 0.5:
+            # we offer an explanation or error message (on exactly which line is at fault)
+            # Generated poem is incorrect because <which rule was violated, and where:> poem needs to have exactly 7 syllables in each line, but lines x,y do not.
+            feedback = f"The generated {self.form_name} is incorrect.\n"
+            feedback += f"{self.form_name} needs to have exactly {', '.join(self.req_str).strip(', ')} syllables in {'-'.join(self.para_req_str)} lines."
+            didactic_feedback.hn += f" The number of syllables in each line should follow a {', '.join(self.req_str).strip(', ')} pattern"
+            feedback += ", but line"
+            for tup in error_info:
+                i, j, line, count, diff = tup
+                feedback += f" {j + 1} in paragraph {i + 1},"
+            feedback = feedback[:-1]
+            feedback += " do not." if len(error_info) > 1 else " does not."
+        elif self.feedback == 1:
+            feedback = f"The generated {self.form_name} is incorrect.\n"
+            feedback += "Here are some suggestions to fix your error:\n"
+            for tup in error_info:
+                i, j, line, count, diff = tup
+                improv_direction = "more" if diff > 0 else "less"
+                feedback += f'The line: "{line}" has {count} syllables. It should only have {self.req[i][j]} syllables. '
+                feedback += f'You should rewrite the line to have {improv_direction} syllables.' + '\n'
+
+        return feedback, didactic_feedback
+
+    """ This function puts everything together. """
+    def step(self, tup):
+        line_syllables, lines = tup
+        checks = self.checks
+        feedbacks, didactic_feedback = [], Feedback()
+        success = True
+        if not checks['suffix']:
+            success = False
+            feedback, didactic_feedback = self.suffix_incorrect(lines[-1][-1])
+            feedbacks.append(feedback)
+            # TODO: preserve the didactic feedback (not hierarchical)
+            frac = 0
+        elif not checks['paras']:
+            success = False
+            feedback, didactic_feedback = self.paras_number_incorrect(len(line_syllables))
+            feedbacks.append(feedback)
+            frac = 0
+            # if paragraph numbers are not enough, it's a serious problem, reward we manually set to be 0
+        elif False in checks['lines']:
+            success = False
+
+            para_success, frac, error_info, success_info = self.line_number_check([len(line_syllables[i]) for i in range(len(line_syllables))], lines)
+            assert para_success == (len(error_info) == 0)
+            success *= para_success
+
+            feedback, didactic_feedback = self.produce_para_feedback(error_info, success_info)
+            feedbacks.append(feedback)
+        else:
+            syllable_success, frac, error_info, success_info = self.syllable_number_check(line_syllables, lines)
             assert syllable_success == (len(error_info) == 0)
             success *= syllable_success
             feedback, didactic_feedback = self.produce_line_feedback(error_info, success_info)

@@ -9,6 +9,7 @@ ENVIRONMENTS = (
     'LineSyllableConstrainedPoem',
     'SyllableConstrainedPoem',
     'HierarchicalLineSyllableConstrainedPoem',
+    'NumericalPlanningPoem',
 )
 
 def make_env(env_name,
