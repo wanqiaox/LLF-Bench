@@ -284,8 +284,7 @@ def standardize_model_name(model):
 
 def make_llm(model, **kwargs):
     """ model = backend:model_name """
-    # available_backends = ['gcr']  # TODO
-    available_backends = []
+    available_backends = ['autogen', 'gcr']  # TODO
     if os.getenv('AZURE_OPENAI_KEY') is not None:
         available_backends.append('azure')
 
@@ -319,5 +318,5 @@ def make_llm(model, **kwargs):
         raise ValueError("Unknown LLM model: {}".format(model))
 
 # Create a default LLM
-DEFAULT_MODEL = "gpt-4"
+DEFAULT_MODEL = "gpt-35-turbo"
 DEFAULT_LLM = make_llm(DEFAULT_MODEL, system_prompt="You're a helpful assistant.", temperature=0.0)
